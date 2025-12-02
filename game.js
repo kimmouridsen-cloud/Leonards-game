@@ -38,8 +38,6 @@ let healthText;
 let gameOver = false;
 let gameOverTexts = []; // Store references to game over text objects
 let touchActive = false;
-let lastTouchX = 0;
-let lastTouchY = 0;
 let shootKey;
 let enemySpawnTimer = 0;
 let shootCooldown = 0;
@@ -304,28 +302,36 @@ function create() {
     cursors = this.input.keyboard.createCursorKeys();
     shootKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
     
-    // Touch controls - drag to move
+    // Touch controls - relative movement (spaceship moves relative to finger movement)
     let touchStartTime = 0;
     let touchStartX = 0;
     let touchStartY = 0;
+    let touchStartPlayerX = 0;
+    let touchStartPlayerY = 0;
     
     this.input.on('pointerdown', (pointer) => {
         touchStartTime = this.time.now;
         touchStartX = pointer.x;
         touchStartY = pointer.y;
+        touchStartPlayerX = player.x;
+        touchStartPlayerY = player.y;
         touchActive = true;
-        lastTouchX = pointer.x;
-        lastTouchY = pointer.y;
     });
     
     this.input.on('pointermove', (pointer) => {
         if (touchActive && !gameOver) {
-            lastTouchX = pointer.x;
-            lastTouchY = pointer.y;
-            // Move player towards touch position smoothly
-            const distance = Phaser.Math.Distance.Between(player.x, player.y, lastTouchX, lastTouchY);
+            // Calculate relative movement: how far finger moved from initial touch
+            const deltaX = pointer.x - touchStartX;
+            const deltaY = pointer.y - touchStartY;
+            
+            // Calculate target position relative to where player was when touch started
+            const targetX = touchStartPlayerX + deltaX;
+            const targetY = touchStartPlayerY + deltaY;
+            
+            // Move player towards relative target position
+            const distance = Phaser.Math.Distance.Between(player.x, player.y, targetX, targetY);
             if (distance > 5) {
-                this.physics.moveTo(player, lastTouchX, lastTouchY, 600);
+                this.physics.moveTo(player, targetX, targetY, 600);
             } else {
                 player.setVelocity(0, 0);
             }
