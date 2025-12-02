@@ -1,12 +1,14 @@
 // Game configuration
 const config = {
     type: Phaser.AUTO,
-    width: 800,
-    height: 600,
+    width: window.innerWidth,
+    height: window.innerHeight,
     parent: 'game-container',
     scale: {
-        mode: Phaser.Scale.FIT,
-        autoCenter: Phaser.Scale.CENTER_BOTH
+        mode: Phaser.Scale.RESIZE,
+        autoCenter: Phaser.Scale.CENTER_BOTH,
+        width: '100%',
+        height: '100%'
     },
     physics: {
         default: 'arcade',
@@ -142,8 +144,20 @@ function preload() {
 }
 
 function create() {
-    // Create solid black background first
-    this.add.rectangle(0, 0, config.width, config.height, 0x000000).setOrigin(0, 0).setDepth(-100);
+    // Create solid black background first - use dynamic dimensions
+    const bgRect = this.add.rectangle(0, 0, this.scale.width, this.scale.height, 0x000000).setOrigin(0, 0).setDepth(-100);
+    
+    // Handle window resize
+    this.scale.on('resize', (gameSize) => {
+        // Update background size
+        bgRect.setSize(gameSize.width, gameSize.height);
+        // Update camera bounds
+        this.cameras.main.setBounds(0, 0, gameSize.width, gameSize.height);
+        // Update star layers
+        stars.children.entries.forEach((starLayer) => {
+            starLayer.setSize(gameSize.width, gameSize.height * 2);
+        });
+    });
     
     // Create bullet graphic programmatically
     const bulletGraphics = this.add.graphics();
@@ -224,7 +238,7 @@ function create() {
     for (let i = 0; i < 3; i++) {
         const starKey = `stars${i}`;
         const textureToUse = isValidTexture(starKey) ? starKey : 'fallbackStars';
-        const starsLayer = this.add.tileSprite(0, 0, config.width, config.height * 2, textureToUse);
+        const starsLayer = this.add.tileSprite(0, 0, this.scale.width, this.scale.height * 2, textureToUse);
         starsLayer.setOrigin(0, 0);
         starsLayer.setScrollFactor(0.3 + i * 0.2, 0.3 + i * 0.2);
         stars.add(starsLayer);
@@ -251,7 +265,7 @@ function create() {
         }
         
         // Create player sprite from sheet
-        player = this.physics.add.sprite(config.width / 2, config.height - 100, 'playerSheet');
+        player = this.physics.add.sprite(this.scale.width / 2, this.scale.height - 100, 'playerSheet');
         
         // Create animation (4 frames, 10fps, loop)
         if (!this.anims.exists('playerFly')) {
@@ -274,7 +288,7 @@ function create() {
         console.log('Player sprite sheet - frame size:', frameWidth, 'x', frameHeight, 'scale:', playerScale);
     } else {
         // Fallback: use regular image
-        player = this.physics.add.sprite(config.width / 2, config.height - 100, 'player');
+        player = this.physics.add.sprite(this.scale.width / 2, this.scale.height - 100, 'player');
         playerScale = 2;
         player.setScale(playerScale);
         console.log('Using fallback player graphics');
@@ -311,7 +325,7 @@ function create() {
             // Move player towards touch position smoothly
             const distance = Phaser.Math.Distance.Between(player.x, player.y, lastTouchX, lastTouchY);
             if (distance > 5) {
-                this.physics.moveTo(player, lastTouchX, lastTouchY, 300);
+                this.physics.moveTo(player, lastTouchX, lastTouchY, 600);
             } else {
                 player.setVelocity(0, 0);
             }
@@ -372,14 +386,14 @@ function update() {
         const speed = (index + 1) * 0.3;
         starLayer.tilePositionY -= speed;
         // Loop the tile sprite
-        if (starLayer.tilePositionY <= -config.height) {
+        if (starLayer.tilePositionY <= -this.scale.height) {
             starLayer.tilePositionY = 0;
         }
     });
     
     // Keyboard movement
     if (!touchActive) {
-        const speed = 300;
+        const speed = 600;
         player.setVelocity(0, 0);
         
         if (cursors.left.isDown) {
@@ -456,7 +470,7 @@ function update() {
     
     // Remove enemies that go off screen (player avoided them - award points)
     enemies.children.entries.forEach((enemy) => {
-        if (enemy.y > config.height + 50) {
+        if (enemy.y > this.scale.height + 50) {
             // Award points for successfully avoiding the enemy
             score += POINTS_FOR_AVOIDING_ENEMY;
             scoreText.setText('Score: ' + score);
@@ -475,7 +489,7 @@ function shootBullet() {
 
 function spawnEnemy(scene, currentScore = 0, elapsedTime = 0) {
     // Distribute enemies across the screen width
-    const x = Phaser.Math.Between(50, config.width - 50);
+    const x = Phaser.Math.Between(50, scene.scale.width - 50);
     const textures = scene.textures.list;
     
     const isValidTexture = (key) => {
@@ -684,7 +698,7 @@ function showGameOver() {
     gameOverTexts = [];
     
     // Game Over text
-    const gameOverText = scene.add.text(config.width / 2, config.height / 2 - 50, 'GAME OVER', {
+    const gameOverText = scene.add.text(scene.scale.width / 2, scene.scale.height / 2 - 50, 'GAME OVER', {
         fontSize: '48px',
         fill: '#ff0000',
         stroke: '#000',
@@ -693,7 +707,7 @@ function showGameOver() {
     gameOverText.setOrigin(0.5);
     gameOverTexts.push(gameOverText);
     
-    const finalScoreText = scene.add.text(config.width / 2, config.height / 2 + 20, 'Final Score: ' + score, {
+    const finalScoreText = scene.add.text(scene.scale.width / 2, scene.scale.height / 2 + 20, 'Final Score: ' + score, {
         fontSize: '32px',
         fill: '#fff',
         stroke: '#000',
@@ -702,7 +716,7 @@ function showGameOver() {
     finalScoreText.setOrigin(0.5);
     gameOverTexts.push(finalScoreText);
     
-    const restartText = scene.add.text(config.width / 2, config.height / 2 + 80, 'Tap or Click to Restart', {
+    const restartText = scene.add.text(scene.scale.width / 2, scene.scale.height / 2 + 80, 'Tap or Click to Restart', {
         fontSize: '24px',
         fill: '#ffff00',
         stroke: '#000',
@@ -735,7 +749,7 @@ function restartGame() {
     bullets.clear(true, true);
     
     // Reset player
-    player.setPosition(config.width / 2, config.height - 100);
+    player.setPosition(player.scene.scale.width / 2, player.scene.scale.height - 100);
     player.clearTint();
     player.setVelocity(0, 0);
     
@@ -767,19 +781,21 @@ function createFallbackStarField(scene) {
     // Always create fallback stars (they'll be used if images don't load)
     if (!scene.textures.exists('fallbackStars')) {
         const graphics = scene.add.graphics();
+        const width = scene.scale.width || 800;
+        const height = scene.scale.height || 600;
         graphics.fillStyle(0x000000, 1);
-        graphics.fillRect(0, 0, config.width, config.height * 2);
+        graphics.fillRect(0, 0, width, height * 2);
         
         // Add some white dots as stars
         graphics.fillStyle(0xffffff, 1);
         for (let i = 0; i < 200; i++) {
-            const x = Math.random() * config.width;
-            const y = Math.random() * config.height * 2;
+            const x = Math.random() * width;
+            const y = Math.random() * height * 2;
             const size = Math.random() * 2 + 0.5;
             graphics.fillCircle(x, y, size);
         }
         
-        graphics.generateTexture('fallbackStars', config.width, config.height * 2);
+        graphics.generateTexture('fallbackStars', width, height * 2);
         graphics.destroy();
     }
 }
