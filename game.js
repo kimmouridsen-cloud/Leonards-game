@@ -302,7 +302,7 @@ function create() {
     cursors = this.input.keyboard.createCursorKeys();
     shootKey = this.input.keyboard.addKey(Phaser.Input.Keyboard.KeyCodes.SPACE);
     
-    // Touch controls - relative movement (spaceship moves relative to finger movement)
+    // Touch controls - direct relative positioning (spaceship position follows finger offset)
     let touchStartTime = 0;
     let touchStartX = 0;
     let touchStartY = 0;
@@ -320,21 +320,20 @@ function create() {
     
     this.input.on('pointermove', (pointer) => {
         if (touchActive && !gameOver) {
-            // Calculate relative movement: how far finger moved from initial touch
+            // Calculate how far finger has moved from initial touch point
             const deltaX = pointer.x - touchStartX;
             const deltaY = pointer.y - touchStartY;
             
-            // Calculate target position relative to where player was when touch started
+            // Calculate target position: player's initial position + finger movement
             const targetX = touchStartPlayerX + deltaX;
             const targetY = touchStartPlayerY + deltaY;
             
-            // Move player towards relative target position
-            const distance = Phaser.Math.Distance.Between(player.x, player.y, targetX, targetY);
-            if (distance > 5) {
-                this.physics.moveTo(player, targetX, targetY, 600);
-            } else {
-                player.setVelocity(0, 0);
-            }
+            // Clamp to screen bounds
+            const clampedX = Math.max(player.width/2, Math.min(targetX, this.scale.width - player.width/2));
+            const clampedY = Math.max(player.height/2, Math.min(targetY, this.scale.height - player.height/2));
+            
+            // Set position directly - no velocity, instant response
+            player.setPosition(clampedX, clampedY);
         }
     });
     
@@ -349,9 +348,6 @@ function create() {
         }
         
         touchActive = false;
-        if (!gameOver) {
-            player.setVelocity(0, 0);
-        }
     });
     
     // Collision detection
