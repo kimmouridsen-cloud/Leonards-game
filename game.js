@@ -43,9 +43,22 @@ let enemySpawnTimer = 0;
 let shootCooldown = 0;
 let gameStartTime = 0; // Track when game started
 
+// Boss state
+let boss = null;
+let bossActive = false;
+let bossHP = 0;
+const BOSS_MAX_HP = 20;
+let bossHealthBar = null;
+let bossHealthBarBg = null;
+let bossBullets;
+let bossShootTimer = 0;
+let lastBossSpawnTime = 0;
+let bossDriftTime = 0;
+
 // Scoring constants
-const POINTS_FOR_AVOIDING_ENEMY = 10; // Points for avoiding an enemy (when it exits screen)
-const POINTS_FOR_SHOOTING_ENEMY = POINTS_FOR_AVOIDING_ENEMY * 5; // 5x points for shooting (50 points)
+const POINTS_FOR_AVOIDING_ENEMY = 10;
+const POINTS_FOR_SHOOTING_ENEMY = POINTS_FOR_AVOIDING_ENEMY * 5;
+const POINTS_FOR_SHOOTING_BOSS = POINTS_FOR_SHOOTING_ENEMY * 30;
 
 // Sound effect functions using Web Audio API
 function playEnemyShotSound() {
@@ -123,10 +136,35 @@ function playPlayerDeathSound() {
     }
 }
 
+function playBossShootSound() {
+    try {
+        const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+
+        // Deep, menacing shot: low frequency sweep
+        oscillator.frequency.setValueAtTime(180, audioContext.currentTime);
+        oscillator.frequency.exponentialRampToValueAtTime(60, audioContext.currentTime + 0.2);
+
+        gainNode.gain.setValueAtTime(0.35, audioContext.currentTime);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.2);
+
+        oscillator.type = 'triangle';
+        oscillator.start(audioContext.currentTime);
+        oscillator.stop(audioContext.currentTime + 0.2);
+    } catch (e) {
+        console.log('Audio not available');
+    }
+}
+
 function preload() {
     // Load images first (we'll create sprite sheets from them in create())
     this.load.image('player', 'images/player.png');
     this.load.image('enemy', 'images/enemy.png');
+    this.load.image('boss', 'images/boss.png');
     this.load.image('stars0', 'images/stars_0.png');
     this.load.image('stars1', 'images/stars_1.png');
     this.load.image('stars2', 'images/stars_2.png');
@@ -178,6 +216,13 @@ function create() {
     flashGraphics.fillCircle(0, 0, 8);
     flashGraphics.generateTexture('explosionFlash', 16, 16);
     flashGraphics.destroy();
+    
+    // Create boss bullet texture (red/orange circle)
+    const bossBulletGraphics = this.add.graphics();
+    bossBulletGraphics.fillStyle(0xff4400, 1);
+    bossBulletGraphics.fillCircle(4, 4, 4);
+    bossBulletGraphics.generateTexture('bossBullet', 8, 8);
+    bossBulletGraphics.destroy();
     
     // Check if images loaded successfully BEFORE creating fallbacks
     const textures = this.textures.list;
@@ -294,9 +339,10 @@ function create() {
     
     player.setCollideWorldBounds(true);
     
-    // Create groups for enemies and bullets
+    // Create groups for enemies, bullets, and boss bullets
     enemies = this.physics.add.group();
     bullets = this.physics.add.group();
+    bossBullets = this.physics.add.group();
     
     // Keyboard controls
     cursors = this.input.keyboard.createCursorKeys();
@@ -353,6 +399,7 @@ function create() {
     // Collision detection
     this.physics.add.overlap(bullets, enemies, hitEnemy, null, this);
     this.physics.add.overlap(player, enemies, hitPlayer, null, this);
+    this.physics.add.overlap(player, bossBullets, hitPlayerWithBossBullet, null, this);
     
     // UI Text
     scoreText = this.add.text(16, 16, 'Score: 0', {
@@ -417,50 +464,74 @@ function update() {
         shootCooldown = 10;
     }
     
-    // Spawn enemies with increasing difficulty (based on both score AND time)
-    enemySpawnTimer++;
-    
     // Calculate elapsed time in seconds
-    const elapsedTime = (this.time.now - gameStartTime) / 1000; // Convert to seconds
+    const elapsedTime = (this.time.now - gameStartTime) / 1000;
+    const dt = this.game.loop.delta / 1000;
     
-    // Calculate difficulty based on BOTH score and time
-    const baseSpawnInterval = 120; // 2 seconds at start
-    const minSpawnInterval = 40; // Minimum 0.67 seconds (very fast)
+    // Boss spawn check: every 60 seconds, if no boss currently active
+    if (!bossActive && elapsedTime - lastBossSpawnTime >= 60) {
+        spawnBoss(this);
+    }
     
-    // Score-based difficulty (0 to 1)
-    const maxScoreForSpawnRate = 300;
-    const scoreDifficulty = Math.min(1, score / maxScoreForSpawnRate);
-    
-    // Time-based difficulty (0 to 1) - increases over 2 minutes
-    const timeDifficultyMaxSeconds = 120; // 2 minutes
-    const timeDifficulty = Math.min(1, elapsedTime / timeDifficultyMaxSeconds);
-    
-    // Combine both factors (weighted: 40% score, 60% time)
-    const combinedDifficulty = (scoreDifficulty * 0.4) + (timeDifficulty * 0.6);
-    
-    // Calculate spawn interval based on combined difficulty
-    const spawnInterval = Math.max(
-        minSpawnInterval,
-        baseSpawnInterval - Math.floor(combinedDifficulty * (baseSpawnInterval - minSpawnInterval))
-    );
-    
-    // Calculate number of enemies to spawn based on BOTH score and time
-    // Score factor: 1 enemy per 200 points
-    // Time factor: +1 enemy every 30 seconds
-    const scoreEnemies = Math.floor(score / 200);
-    const timeEnemies = Math.floor(elapsedTime / 30);
-    const enemiesPerWave = Math.min(6, Math.max(1, 1 + scoreEnemies + timeEnemies));
-    
-    if (enemySpawnTimer > spawnInterval) {
-        // Spawn multiple enemies in a wave
-        for (let i = 0; i < enemiesPerWave; i++) {
-            // Stagger spawn positions slightly to avoid overlap
-            const delay = i * 10; // Small delay between each enemy in the wave
-            this.time.delayedCall(delay, () => {
-                spawnEnemy(this, score, elapsedTime);
-            });
+    // Boss update: movement + shooting
+    if (bossActive && boss && boss.active) {
+        bossDriftTime += dt;
+        
+        // Horizontal sine-wave drift (~40% of screen width)
+        const centerX = this.scale.width / 2;
+        const hAmplitude = this.scale.width * 0.35;
+        boss.x = centerX + Math.sin(bossDriftTime * 0.3) * hAmplitude;
+        
+        // Gentle vertical bobbing
+        const baseY = 130;
+        boss.y = baseY + Math.sin(bossDriftTime * 0.5) * 30;
+        
+        // Update health bar position to follow boss
+        if (bossHealthBarBg && bossHealthBarBg.active) {
+            updateBossHealthBar();
         }
-        enemySpawnTimer = 0;
+        
+        // Boss shooting
+        bossShootTimer -= dt;
+        if (bossShootTimer <= 0) {
+            bossShootTimer = 1.5;
+            fireBossBullet(this);
+        }
+    }
+    
+    // Only spawn regular enemies when boss is NOT active
+    if (!bossActive) {
+        enemySpawnTimer++;
+        
+        const baseSpawnInterval = 120;
+        const minSpawnInterval = 40;
+        
+        const maxScoreForSpawnRate = 300;
+        const scoreDifficulty = Math.min(1, score / maxScoreForSpawnRate);
+        
+        const timeDifficultyMaxSeconds = 120;
+        const timeDifficulty = Math.min(1, elapsedTime / timeDifficultyMaxSeconds);
+        
+        const combinedDifficulty = (scoreDifficulty * 0.4) + (timeDifficulty * 0.6);
+        
+        const spawnInterval = Math.max(
+            minSpawnInterval,
+            baseSpawnInterval - Math.floor(combinedDifficulty * (baseSpawnInterval - minSpawnInterval))
+        );
+        
+        const scoreEnemies = Math.floor(score / 200);
+        const timeEnemies = Math.floor(elapsedTime / 30);
+        const enemiesPerWave = Math.min(6, Math.max(1, 1 + scoreEnemies + timeEnemies));
+        
+        if (enemySpawnTimer > spawnInterval) {
+            for (let i = 0; i < enemiesPerWave; i++) {
+                const delay = i * 10;
+                this.time.delayedCall(delay, () => {
+                    spawnEnemy(this, score, elapsedTime);
+                });
+            }
+            enemySpawnTimer = 0;
+        }
     }
     
     // Remove bullets that go off screen
@@ -470,13 +541,35 @@ function update() {
         }
     });
     
-    // Remove enemies that go off screen (player avoided them - award points)
+    // Remove boss bullets that go off screen
+    bossBullets.children.entries.forEach((b) => {
+        if (b.y > this.scale.height + 20 || b.y < -20 || b.x < -20 || b.x > this.scale.width + 20) {
+            b.destroy();
+        }
+    });
+    
+    // Update enemy horizontal drift and remove off-screen enemies
     enemies.children.entries.forEach((enemy) => {
+        if (enemy === boss) return;
+        
         if (enemy.y > this.scale.height + 50) {
-            // Award points for successfully avoiding the enemy
             score += POINTS_FOR_AVOIDING_ENEMY;
             scoreText.setText('Score: ' + score);
             enemy.destroy();
+            return;
+        }
+
+        if (enemy.driftAmp1 != null) {
+            enemy.driftTime += dt;
+            // Random walk: small random nudges that accumulate over time
+            enemy.driftWander += (Math.random() - 0.5) * 120 * dt;
+            enemy.driftWander *= 0.97; // dampen so it doesn't run away
+            const targetX = enemy.driftOriginX
+                + Math.sin(enemy.driftTime * enemy.driftSpd1 + enemy.driftPhase1) * enemy.driftAmp1
+                + Math.sin(enemy.driftTime * enemy.driftSpd2 + enemy.driftPhase2) * enemy.driftAmp2
+                + enemy.driftWander;
+            const clampedX = Phaser.Math.Clamp(targetX, 30, this.scale.width - 30);
+            enemy.x = clampedX;
         }
     });
 }
@@ -577,82 +670,274 @@ function spawnEnemy(scene, currentScore = 0, elapsedTime = 0) {
     
     enemy.setVelocityY(Phaser.Math.Between(minSpeed, maxSpeed));
     enemy.body.setSize(enemy.width * 0.8, enemy.height * 0.8);
+
+    // Horizontal drift — two layered sine waves + random walk for organic movement
+    enemy.driftOriginX = x;
+    enemy.driftAmp1 = Phaser.Math.Between(25, 60);
+    enemy.driftAmp2 = Phaser.Math.Between(10, 30);
+    enemy.driftSpd1 = Phaser.Math.FloatBetween(0.7, 1.8);
+    enemy.driftSpd2 = Phaser.Math.FloatBetween(1.5, 3.5);
+    enemy.driftPhase1 = Phaser.Math.FloatBetween(0, Math.PI * 2);
+    enemy.driftPhase2 = Phaser.Math.FloatBetween(0, Math.PI * 2);
+    enemy.driftWander = 0;
+    enemy.driftTime = 0;
+}
+
+function spawnBoss(scene) {
+    const textures = scene.textures.list;
+    const isValidTexture = (key) => {
+        if (!textures[key]) return false;
+        try {
+            const texture = textures[key];
+            if (texture.key && texture.key.includes('__MISSING')) return false;
+            if (texture.source && texture.source[0]) {
+                const source = texture.source[0];
+                if (source.width > 0 && source.height > 0) return true;
+            }
+            return false;
+        } catch (e) {
+            return false;
+        }
+    };
+
+    const startX = scene.scale.width / 2;
+
+    if (isValidTexture('boss')) {
+        const bossTexture = scene.textures.get('boss');
+        const imgWidth = bossTexture.source[0].width;
+        const imgHeight = bossTexture.source[0].height;
+        const frameWidth = Math.floor(imgWidth / 4);
+        const frameHeight = imgHeight;
+
+        if (!scene.textures.exists('bossSheet')) {
+            scene.textures.addSpriteSheet('bossSheet', bossTexture.source[0].image, {
+                frameWidth: frameWidth,
+                frameHeight: frameHeight
+            });
+            scene.anims.create({
+                key: 'bossFly',
+                frames: scene.anims.generateFrameNumbers('bossSheet', { start: 0, end: 3 }),
+                frameRate: 8,
+                repeat: -1
+            });
+        }
+
+        boss = enemies.create(startX, -80, 'bossSheet');
+        boss.play('bossFly');
+
+        const targetSize = 120;
+        const maxDimension = Math.max(frameWidth, frameHeight);
+        const bossScale = maxDimension > 0 ? targetSize / maxDimension : 2;
+        boss.setScale(bossScale);
+    } else {
+        // Fallback: large red diamond
+        if (!scene.textures.exists('bossFallback')) {
+            const g = scene.add.graphics();
+            g.fillStyle(0xff00ff, 1);
+            g.fillRect(-20, -20, 40, 40);
+            g.lineStyle(3, 0xffffff, 1);
+            g.strokeRect(-20, -20, 40, 40);
+            g.generateTexture('bossFallback', 40, 40);
+            g.destroy();
+        }
+        boss = enemies.create(startX, -80, 'bossFallback');
+        boss.setScale(3);
+    }
+
+    boss.isBoss = true;
+    boss.setVelocity(0, 0);
+    boss.body.setSize(boss.width * 0.8, boss.height * 0.8);
+
+    // Tween the boss from off-screen down to its hover position
+    scene.tweens.add({
+        targets: boss,
+        y: 130,
+        duration: 1500,
+        ease: 'Power2'
+    });
+
+    bossActive = true;
+    bossHP = BOSS_MAX_HP;
+    bossDriftTime = 0;
+    bossShootTimer = 2.0;
+
+    // Create health bar background (dark red)
+    bossHealthBarBg = scene.add.rectangle(
+        scene.scale.width / 2, 30, 200, 14, 0x440000
+    ).setDepth(10);
+
+    // Create health bar fill (bright red)
+    bossHealthBar = scene.add.rectangle(
+        scene.scale.width / 2, 30, 200, 14, 0xff0000
+    ).setDepth(11);
+}
+
+function updateBossHealthBar() {
+    if (!bossHealthBar || !bossHealthBar.active) return;
+    const ratio = bossHP / BOSS_MAX_HP;
+    bossHealthBar.width = 200 * ratio;
+    // Shift color from red to green as HP is depleted... actually keep it red-to-yellow
+    if (ratio > 0.5) {
+        bossHealthBar.setFillStyle(0xff0000);
+    } else if (ratio > 0.25) {
+        bossHealthBar.setFillStyle(0xff8800);
+    } else {
+        bossHealthBar.setFillStyle(0xffff00);
+    }
+}
+
+function fireBossBullet(scene) {
+    if (!boss || !boss.active) return;
+    const b = bossBullets.create(boss.x, boss.y + 20, 'bossBullet');
+    b.setScale(1.5);
+
+    const angle = Phaser.Math.Angle.Between(boss.x, boss.y, player.x, player.y);
+    const speed = 280;
+    b.setVelocity(Math.cos(angle) * speed, Math.sin(angle) * speed);
+
+    playBossShootSound();
+}
+
+function hitPlayerWithBossBullet(playerSprite, bullet) {
+    bullet.destroy();
+    health--;
+    healthText.setText('Health: ' + health);
+
+    playPlayerHitSound();
+
+    playerSprite.setTint(0xff0000);
+    playerSprite.scene.time.delayedCall(200, () => {
+        playerSprite.clearTint();
+    });
+
+    if (health <= 0) {
+        gameOver = true;
+        playerSprite.setTint(0xff0000);
+        playPlayerDeathSound();
+        showGameOver();
+    }
+}
+
+function destroyBoss(scene) {
+    if (boss && boss.active) boss.destroy();
+    boss = null;
+    bossActive = false;
+    if (bossHealthBar && bossHealthBar.active) bossHealthBar.destroy();
+    if (bossHealthBarBg && bossHealthBarBg.active) bossHealthBarBg.destroy();
+    bossHealthBar = null;
+    bossHealthBarBg = null;
+    bossBullets.clear(true, true);
+    lastBossSpawnTime = (player.scene.time.now - gameStartTime) / 1000;
 }
 
 function hitEnemy(bullet, enemy) {
-    // Store position before destroying
+    const scene = bullet.scene;
+
+    // Boss: absorb hit, decrement HP
+    if (enemy.isBoss) {
+        bullet.destroy();
+        bossHP--;
+        updateBossHealthBar();
+        playEnemyShotSound();
+
+        // Flash the boss white briefly
+        enemy.setTint(0xffffff);
+        scene.time.delayedCall(80, () => {
+            if (enemy && enemy.active) enemy.clearTint();
+        });
+
+        if (bossHP <= 0) {
+            const bossX = enemy.x;
+            const bossY = enemy.y;
+
+            score += POINTS_FOR_SHOOTING_BOSS;
+            scoreText.setText('Score: ' + score);
+
+            destroyBoss(scene);
+            createBossExplosion(scene, bossX, bossY);
+        }
+        return;
+    }
+
+    // Regular enemy: destroy immediately
     const enemyX = enemy.x;
     const enemyY = enemy.y;
-    const scene = bullet.scene;
-    
-    // Destroy bullet and enemy
+
     bullet.destroy();
     enemy.destroy();
-    
-    // Play enemy shot sound effect
+
     playEnemyShotSound();
-    
-    // Update score (5x points for shooting vs avoiding)
+
     score += POINTS_FOR_SHOOTING_ENEMY;
     scoreText.setText('Score: ' + score);
-    
-    // Create dramatic explosion effect
+
+    createExplosion(scene, enemyX, enemyY, 1.0);
+}
+
+function createExplosion(scene, x, y, scale) {
     try {
-        // Create initial flash effect (bright white flash that fades quickly)
-        const flash = scene.add.particles(enemyX, enemyY, 'explosionFlash', {
+        const flash = scene.add.particles(x, y, 'explosionFlash', {
             speed: 0,
-            scale: { start: 1.5, end: 0 },
+            scale: { start: 1.5 * scale, end: 0 },
             alpha: { start: 1, end: 0 },
             tint: 0xffffff,
             lifespan: 100,
             quantity: 1
         });
-        
-        // Main explosion - red/orange fire particles
-        const fireParticles = scene.add.particles(enemyX, enemyY, 'explosionParticle', {
-            speed: { min: 100, max: 250 },
+
+        const fireParticles = scene.add.particles(x, y, 'explosionParticle', {
+            speed: { min: 100 * scale, max: 250 * scale },
             angle: { min: 0, max: 360 },
-            scale: { start: 1, end: 0 },
+            scale: { start: 1 * scale, end: 0 },
             alpha: { start: 1, end: 0 },
-            tint: [0xff0000, 0xff4400, 0xff8800], // Red, orange-red, orange
+            tint: [0xff0000, 0xff4400, 0xff8800],
             lifespan: { min: 400, max: 600 },
-            quantity: 15,
-            gravityY: 50 // Slight downward pull
+            quantity: Math.floor(15 * scale),
+            gravityY: 50
         });
-        
-        // Secondary explosion - yellow sparks
-        const sparkParticles = scene.add.particles(enemyX, enemyY, 'explosionParticle', {
-            speed: { min: 150, max: 300 },
+
+        const sparkParticles = scene.add.particles(x, y, 'explosionParticle', {
+            speed: { min: 150 * scale, max: 300 * scale },
             angle: { min: 0, max: 360 },
-            scale: { start: 0.8, end: 0 },
+            scale: { start: 0.8 * scale, end: 0 },
             alpha: { start: 1, end: 0 },
-            tint: [0xffff00, 0xffaa00], // Yellow, orange-yellow
+            tint: [0xffff00, 0xffaa00],
             lifespan: { min: 300, max: 500 },
-            quantity: 10
+            quantity: Math.floor(10 * scale)
         });
-        
-        // Debris particles - darker chunks
-        const debrisParticles = scene.add.particles(enemyX, enemyY, 'explosionParticle', {
-            speed: { min: 80, max: 200 },
+
+        const debrisParticles = scene.add.particles(x, y, 'explosionParticle', {
+            speed: { min: 80 * scale, max: 200 * scale },
             angle: { min: 0, max: 360 },
-            scale: { start: 1.2, end: 0 },
+            scale: { start: 1.2 * scale, end: 0 },
             alpha: { start: 0.8, end: 0 },
-            tint: [0x333333, 0x666666, 0x999999], // Dark gray debris
+            tint: [0x333333, 0x666666, 0x999999],
             lifespan: { min: 500, max: 700 },
-            quantity: 8,
-            gravityY: 100 // More gravity for debris
+            quantity: Math.floor(8 * scale),
+            gravityY: 100
         });
-        
-        // Clean up all particle emitters after animation completes
-        scene.time.delayedCall(700, () => {
+
+        const cleanupTime = Math.floor(700 * scale);
+        scene.time.delayedCall(cleanupTime, () => {
             if (flash && flash.active) flash.destroy();
             if (fireParticles && fireParticles.active) fireParticles.destroy();
             if (sparkParticles && sparkParticles.active) sparkParticles.destroy();
             if (debrisParticles && debrisParticles.active) debrisParticles.destroy();
         });
     } catch (e) {
-        // If particles fail, just continue - don't freeze the game
         console.log('Explosion effect error (non-critical):', e);
+    }
+}
+
+function createBossExplosion(scene, x, y) {
+    // Multiple staggered explosions for a dramatic boss death
+    for (let i = 0; i < 5; i++) {
+        scene.time.delayedCall(i * 200, () => {
+            const offsetX = x + Phaser.Math.Between(-40, 40);
+            const offsetY = y + Phaser.Math.Between(-40, 40);
+            createExplosion(scene, offsetX, offsetY, 2.0);
+            playEnemyShotSound();
+        });
     }
 }
 
@@ -689,6 +974,9 @@ function showGameOver() {
     });
     bullets.children.entries.forEach((bullet) => {
         bullet.setVelocity(0, 0);
+    });
+    bossBullets.children.entries.forEach((b) => {
+        b.setVelocity(0, 0);
     });
     
     // Clear any existing game over texts first
@@ -744,11 +1032,24 @@ function restartGame() {
     enemySpawnTimer = 0;
     shootCooldown = 0;
     touchActive = false;
-    gameStartTime = player.scene.time.now; // Reset game start time
-    
+    gameStartTime = player.scene.time.now;
+
+    // Reset boss state
+    if (bossHealthBar && bossHealthBar.active) bossHealthBar.destroy();
+    if (bossHealthBarBg && bossHealthBarBg.active) bossHealthBarBg.destroy();
+    bossHealthBar = null;
+    bossHealthBarBg = null;
+    boss = null;
+    bossActive = false;
+    bossHP = 0;
+    bossShootTimer = 0;
+    lastBossSpawnTime = 0;
+    bossDriftTime = 0;
+
     // Clear all sprites
     enemies.clear(true, true);
     bullets.clear(true, true);
+    bossBullets.clear(true, true);
     
     // Reset player
     player.setPosition(player.scene.scale.width / 2, player.scene.scale.height - 100);
