@@ -503,13 +503,13 @@ function update() {
     if (!bossActive) {
         enemySpawnTimer++;
         
-        const baseSpawnInterval = 120;
-        const minSpawnInterval = 40;
+        const baseSpawnInterval = 160;
+        const minSpawnInterval = 60;
         
-        const maxScoreForSpawnRate = 300;
+        const maxScoreForSpawnRate = 500;
         const scoreDifficulty = Math.min(1, score / maxScoreForSpawnRate);
         
-        const timeDifficultyMaxSeconds = 120;
+        const timeDifficultyMaxSeconds = 180;
         const timeDifficulty = Math.min(1, elapsedTime / timeDifficultyMaxSeconds);
         
         const combinedDifficulty = (scoreDifficulty * 0.4) + (timeDifficulty * 0.6);
@@ -519,9 +519,9 @@ function update() {
             baseSpawnInterval - Math.floor(combinedDifficulty * (baseSpawnInterval - minSpawnInterval))
         );
         
-        const scoreEnemies = Math.floor(score / 200);
-        const timeEnemies = Math.floor(elapsedTime / 30);
-        const enemiesPerWave = Math.min(6, Math.max(1, 1 + scoreEnemies + timeEnemies));
+        const scoreEnemies = Math.floor(score / 300);
+        const timeEnemies = Math.floor(elapsedTime / 45);
+        const enemiesPerWave = Math.min(4, Math.max(1, 1 + scoreEnemies + timeEnemies));
         
         if (enemySpawnTimer > spawnInterval) {
             for (let i = 0; i < enemiesPerWave; i++) {
