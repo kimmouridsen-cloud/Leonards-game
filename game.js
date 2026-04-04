@@ -60,6 +60,31 @@ const POINTS_FOR_AVOIDING_ENEMY = 10;
 const POINTS_FOR_SHOOTING_ENEMY = POINTS_FOR_AVOIDING_ENEMY * 5;
 const POINTS_FOR_SHOOTING_BOSS = POINTS_FOR_SHOOTING_ENEMY * 30;
 
+// Math equation state
+let mathEquation = null;
+let mathAnswer = 0;
+let mathSpawnTimer = 0;
+let mathPaused = false;
+let mathInputText = '';
+let mathCountdown = 0;
+let mathNumberButtons = [];
+let mathInputDisplay = null;
+let mathCountdownText = null;
+let mathOverlay = null;
+let mathQuestionText = null;
+let mathSubmitButton = null;
+let mathSubmitLabel = null;
+let mathClearButton = null;
+let mathClearLabel = null;
+let mathTimerEvent = null;
+let mathKeyboardHandler = null;
+let mathStoredVelocities = [];
+const MATH_SPAWN_INTERVAL = 15;
+const MATH_FALL_SPEED = 120;
+const MATH_PAUSE_DURATION = 6;
+const MATH_CORRECT_POINTS = 300;
+const MATH_MISS_PENALTY = 300;
+
 // Sound effect functions using Web Audio API
 function playEnemyShotSound() {
     try {
@@ -356,6 +381,7 @@ function create() {
     let touchStartPlayerY = 0;
     
     this.input.on('pointerdown', (pointer) => {
+        if (mathPaused) return;
         touchStartTime = this.time.now;
         touchStartX = pointer.x;
         touchStartY = pointer.y;
@@ -365,7 +391,7 @@ function create() {
     });
     
     this.input.on('pointermove', (pointer) => {
-        if (touchActive && !gameOver) {
+        if (touchActive && !gameOver && !mathPaused) {
             // Calculate how far finger has moved from initial touch point
             const deltaX = pointer.x - touchStartX;
             const deltaY = pointer.y - touchStartY;
@@ -388,7 +414,7 @@ function create() {
         const touchDistance = Phaser.Math.Distance.Between(touchStartX, touchStartY, pointer.x, pointer.y);
         
         // If it was a quick tap (not a drag), shoot
-        if (touchDuration < 200 && touchDistance < 10 && !gameOver && shootCooldown <= 0) {
+        if (touchDuration < 200 && touchDistance < 10 && !gameOver && !mathPaused && shootCooldown <= 0) {
             shootBullet();
             shootCooldown = 10;
         }
@@ -421,7 +447,7 @@ function create() {
 }
 
 function update() {
-    if (gameOver) {
+    if (gameOver || mathPaused) {
         return;
     }
     
@@ -473,6 +499,24 @@ function update() {
         spawnBoss(this);
     }
     
+    // Math equation spawn check
+    mathSpawnTimer += dt;
+    if (mathSpawnTimer >= MATH_SPAWN_INTERVAL && !mathEquation && !mathPaused) {
+        spawnMathEquation(this);
+        mathSpawnTimer = 0;
+    }
+
+    // Move math equation straight down
+    if (mathEquation && mathEquation.active) {
+        mathEquation.y += MATH_FALL_SPEED * dt;
+        if (mathEquation.y > this.scale.height + 50) {
+            score = Math.max(0, score - MATH_MISS_PENALTY);
+            scoreText.setText('Score: ' + score);
+            mathEquation.destroy();
+            mathEquation = null;
+        }
+    }
+
     // Boss update: movement + shooting
     if (bossActive && boss && boss.active) {
         bossDriftTime += dt;
@@ -681,6 +725,311 @@ function spawnEnemy(scene, currentScore = 0, elapsedTime = 0) {
     enemy.driftPhase2 = Phaser.Math.FloatBetween(0, Math.PI * 2);
     enemy.driftWander = 0;
     enemy.driftTime = 0;
+}
+
+function spawnMathEquation(scene) {
+    if (mathEquation) return;
+
+    const a = Phaser.Math.Between(1, 10);
+    const b = Phaser.Math.Between(1, 10);
+    mathAnswer = a + b;
+
+    const x = Phaser.Math.Between(80, scene.scale.width - 80);
+    mathEquation = scene.add.text(x, -40, `${a}+${b}=?`, {
+        fontSize: '36px',
+        fontStyle: 'bold',
+        fill: '#00ffff',
+        stroke: '#003366',
+        strokeThickness: 5,
+        padding: { x: 10, y: 6 }
+    });
+    mathEquation.setOrigin(0.5);
+    mathEquation.setDepth(5);
+    mathEquation.setInteractive({ useHandCursor: true });
+    mathEquation.on('pointerdown', () => {
+        if (gameOver || mathPaused) return;
+        activateMathPause(scene);
+    });
+}
+
+function activateMathPause(scene) {
+    mathPaused = true;
+    mathInputText = '';
+    mathCountdown = MATH_PAUSE_DURATION;
+
+    // Store velocities of all moving objects so we can restore them
+    mathStoredVelocities = [];
+    enemies.children.entries.forEach((e) => {
+        if (e && e.active && e.body) {
+            mathStoredVelocities.push({ obj: e, vx: e.body.velocity.x, vy: e.body.velocity.y });
+            e.setVelocity(0, 0);
+        }
+    });
+    bullets.children.entries.forEach((b) => {
+        if (b && b.active && b.body) {
+            mathStoredVelocities.push({ obj: b, vx: b.body.velocity.x, vy: b.body.velocity.y });
+            b.setVelocity(0, 0);
+        }
+    });
+    bossBullets.children.entries.forEach((b) => {
+        if (b && b.active && b.body) {
+            mathStoredVelocities.push({ obj: b, vx: b.body.velocity.x, vy: b.body.velocity.y });
+            b.setVelocity(0, 0);
+        }
+    });
+    player.setVelocity(0, 0);
+
+    // Hide the falling equation
+    if (mathEquation && mathEquation.active) {
+        mathEquation.setVisible(false);
+    }
+
+    const cx = scene.scale.width / 2;
+    const cy = scene.scale.height / 2;
+
+    // Semi-transparent overlay
+    mathOverlay = scene.add.rectangle(0, 0, scene.scale.width, scene.scale.height, 0x000000, 0.7)
+        .setOrigin(0, 0).setDepth(50);
+
+    const eqLabel = mathEquation ? mathEquation.text : `?+?=${mathAnswer}`;
+    mathQuestionText = scene.add.text(cx, cy - 120, eqLabel.replace('=?', '= ?'), {
+        fontSize: '48px',
+        fontStyle: 'bold',
+        fill: '#00ffff',
+        stroke: '#003366',
+        strokeThickness: 5
+    }).setOrigin(0.5).setDepth(51);
+
+    // Input display
+    mathInputDisplay = scene.add.text(cx, cy - 50, '_ _', {
+        fontSize: '44px',
+        fontStyle: 'bold',
+        fill: '#ffffff',
+        stroke: '#000',
+        strokeThickness: 4
+    }).setOrigin(0.5).setDepth(51);
+
+    // Countdown text
+    mathCountdownText = scene.add.text(cx, cy - 170, `Time: ${MATH_PAUSE_DURATION}`, {
+        fontSize: '28px',
+        fill: '#ffff00',
+        stroke: '#000',
+        strokeThickness: 3
+    }).setOrigin(0.5).setDepth(51);
+
+    // Number buttons 0-9
+    mathNumberButtons = [];
+    const btnSize = 50;
+    const btnGap = 8;
+    const totalWidth = 5 * btnSize + 4 * btnGap;
+    const startX = cx - totalWidth / 2 + btnSize / 2;
+    const row1Y = cy + 20;
+    const row2Y = cy + 20 + btnSize + btnGap;
+
+    for (let i = 0; i < 10; i++) {
+        const row = i < 5 ? 0 : 1;
+        const col = i < 5 ? i : i - 5;
+        const bx = startX + col * (btnSize + btnGap);
+        const by = row === 0 ? row1Y : row2Y;
+        const digit = i;
+
+        const btnBg = scene.add.rectangle(bx, by, btnSize, btnSize, 0x334466, 1)
+            .setDepth(51).setInteractive({ useHandCursor: true });
+        const btnLabel = scene.add.text(bx, by, `${digit}`, {
+            fontSize: '28px',
+            fontStyle: 'bold',
+            fill: '#ffffff'
+        }).setOrigin(0.5).setDepth(52);
+
+        btnBg.on('pointerover', () => btnBg.setFillStyle(0x5577aa));
+        btnBg.on('pointerout', () => btnBg.setFillStyle(0x334466));
+        btnBg.on('pointerdown', () => {
+            if (mathInputText.length < 2) {
+                mathInputText += `${digit}`;
+                updateMathInputDisplay();
+            }
+        });
+
+        mathNumberButtons.push(btnBg, btnLabel);
+    }
+
+    // Clear button
+    const clearY = row2Y + btnSize + btnGap;
+    mathClearButton = scene.add.rectangle(cx - 60, clearY, 100, 44, 0x664433, 1)
+        .setDepth(51).setInteractive({ useHandCursor: true });
+    mathClearLabel = scene.add.text(cx - 60, clearY, 'Clear', {
+        fontSize: '22px', fontStyle: 'bold', fill: '#ffffff'
+    }).setOrigin(0.5).setDepth(52);
+    mathClearButton.on('pointerover', () => mathClearButton.setFillStyle(0x886644));
+    mathClearButton.on('pointerout', () => mathClearButton.setFillStyle(0x664433));
+    mathClearButton.on('pointerdown', () => {
+        mathInputText = '';
+        updateMathInputDisplay();
+    });
+
+    // Submit button
+    mathSubmitButton = scene.add.rectangle(cx + 60, clearY, 100, 44, 0x336633, 1)
+        .setDepth(51).setInteractive({ useHandCursor: true });
+    mathSubmitLabel = scene.add.text(cx + 60, clearY, 'OK', {
+        fontSize: '22px', fontStyle: 'bold', fill: '#ffffff'
+    }).setOrigin(0.5).setDepth(52);
+    mathSubmitButton.on('pointerover', () => mathSubmitButton.setFillStyle(0x449944));
+    mathSubmitButton.on('pointerout', () => mathSubmitButton.setFillStyle(0x336633));
+    mathSubmitButton.on('pointerdown', () => {
+        evaluateMathAnswer(scene);
+    });
+
+    // Keyboard handler
+    mathKeyboardHandler = (event) => {
+        if (!mathPaused) return;
+        if (event.key >= '0' && event.key <= '9' && mathInputText.length < 2) {
+            mathInputText += event.key;
+            updateMathInputDisplay();
+        } else if (event.key === 'Backspace') {
+            mathInputText = mathInputText.slice(0, -1);
+            updateMathInputDisplay();
+        } else if (event.key === 'Enter') {
+            evaluateMathAnswer(scene);
+        }
+    };
+    window.addEventListener('keydown', mathKeyboardHandler);
+
+    // Countdown timer — tick every second
+    mathTimerEvent = scene.time.addEvent({
+        delay: 1000,
+        repeat: MATH_PAUSE_DURATION - 1,
+        callback: () => {
+            mathCountdown--;
+            if (mathCountdownText && mathCountdownText.active) {
+                mathCountdownText.setText(`Time: ${mathCountdown}`);
+            }
+            if (mathCountdown <= 0) {
+                evaluateMathAnswer(scene);
+            }
+        }
+    });
+}
+
+function updateMathInputDisplay() {
+    if (!mathInputDisplay || !mathInputDisplay.active) return;
+    if (mathInputText.length === 0) {
+        mathInputDisplay.setText('_ _');
+    } else if (mathInputText.length === 1) {
+        mathInputDisplay.setText(mathInputText + ' _');
+    } else {
+        mathInputDisplay.setText(mathInputText);
+    }
+}
+
+function evaluateMathAnswer(scene) {
+    if (!mathPaused) return;
+
+    // Prevent double-evaluation
+    if (mathTimerEvent) {
+        mathTimerEvent.remove(false);
+        mathTimerEvent = null;
+    }
+
+    const userAnswer = parseInt(mathInputText, 10);
+    const correct = (userAnswer === mathAnswer);
+
+    if (correct) {
+        score += MATH_CORRECT_POINTS;
+        scoreText.setText('Score: ' + score);
+        playEnemyShotSound();
+        showMathFeedback(scene, 'CORRECT! +300', '#00ff00');
+
+        // Screen-clear: explode all regular enemies
+        enemies.children.entries.slice().forEach((enemy) => {
+            if (enemy && enemy.active && !enemy.isBoss) {
+                createExplosion(scene, enemy.x, enemy.y, 1.0);
+                enemy.destroy();
+            }
+        });
+    } else {
+        health--;
+        healthText.setText('Health: ' + health);
+        playPlayerHitSound();
+        showMathFeedback(scene, `WRONG! Answer: ${mathAnswer}`, '#ff4444');
+        if (health <= 0) {
+            cleanupMathUI();
+            resumeAfterMath();
+            gameOver = true;
+            player.setTint(0xff0000);
+            playPlayerDeathSound();
+            showGameOver();
+            return;
+        }
+    }
+
+    scene.time.delayedCall(800, () => {
+        cleanupMathUI();
+        resumeAfterMath();
+    });
+}
+
+function showMathFeedback(scene, message, color) {
+    const cx = scene.scale.width / 2;
+    const cy = scene.scale.height / 2;
+    const fb = scene.add.text(cx, cy - 50, message, {
+        fontSize: '36px',
+        fontStyle: 'bold',
+        fill: color,
+        stroke: '#000',
+        strokeThickness: 4
+    }).setOrigin(0.5).setDepth(55);
+
+    // Hide the input/buttons immediately so only feedback shows
+    if (mathInputDisplay && mathInputDisplay.active) mathInputDisplay.setVisible(false);
+    if (mathCountdownText && mathCountdownText.active) mathCountdownText.setVisible(false);
+    mathNumberButtons.forEach(b => { if (b && b.active) b.setVisible(false); });
+    if (mathClearButton && mathClearButton.active) mathClearButton.setVisible(false);
+    if (mathClearLabel && mathClearLabel.active) mathClearLabel.setVisible(false);
+    if (mathSubmitButton && mathSubmitButton.active) mathSubmitButton.setVisible(false);
+    if (mathSubmitLabel && mathSubmitLabel.active) mathSubmitLabel.setVisible(false);
+
+    scene.time.delayedCall(750, () => {
+        if (fb && fb.active) fb.destroy();
+    });
+}
+
+function cleanupMathUI() {
+    if (mathOverlay && mathOverlay.active) mathOverlay.destroy();
+    mathOverlay = null;
+    if (mathQuestionText && mathQuestionText.active) mathQuestionText.destroy();
+    mathQuestionText = null;
+    if (mathInputDisplay && mathInputDisplay.active) mathInputDisplay.destroy();
+    mathInputDisplay = null;
+    if (mathCountdownText && mathCountdownText.active) mathCountdownText.destroy();
+    mathCountdownText = null;
+    if (mathClearButton && mathClearButton.active) mathClearButton.destroy();
+    mathClearButton = null;
+    if (mathClearLabel && mathClearLabel.active) mathClearLabel.destroy();
+    mathClearLabel = null;
+    if (mathSubmitButton && mathSubmitButton.active) mathSubmitButton.destroy();
+    mathSubmitButton = null;
+    if (mathSubmitLabel && mathSubmitLabel.active) mathSubmitLabel.destroy();
+    mathSubmitLabel = null;
+    mathNumberButtons.forEach(b => { if (b && b.active) b.destroy(); });
+    mathNumberButtons = [];
+    if (mathTimerEvent) { mathTimerEvent.remove(false); mathTimerEvent = null; }
+    if (mathKeyboardHandler) { window.removeEventListener('keydown', mathKeyboardHandler); mathKeyboardHandler = null; }
+    if (mathEquation && mathEquation.active) mathEquation.destroy();
+    mathEquation = null;
+}
+
+function resumeAfterMath() {
+    mathPaused = false;
+    mathInputText = '';
+    mathSpawnTimer = 0;
+
+    // Restore stored velocities
+    mathStoredVelocities.forEach(({ obj, vx, vy }) => {
+        if (obj && obj.active && obj.body) {
+            obj.setVelocity(vx, vy);
+        }
+    });
+    mathStoredVelocities = [];
 }
 
 function spawnBoss(scene) {
@@ -1033,6 +1382,14 @@ function restartGame() {
     shootCooldown = 0;
     touchActive = false;
     gameStartTime = player.scene.time.now;
+
+    // Reset math equation state
+    cleanupMathUI();
+    mathPaused = false;
+    mathInputText = '';
+    mathSpawnTimer = 0;
+    mathCountdown = 0;
+    mathStoredVelocities = [];
 
     // Reset boss state
     if (bossHealthBar && bossHealthBar.active) bossHealthBar.destroy();
