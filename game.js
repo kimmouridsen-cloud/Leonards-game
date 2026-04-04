@@ -47,7 +47,7 @@ let gameStartTime = 0; // Track when game started
 let boss = null;
 let bossActive = false;
 let bossHP = 0;
-const BOSS_MAX_HP = 20;
+let bossMaxHP = 20;
 let bossHealthBar = null;
 let bossHealthBarBg = null;
 let bossBullets;
@@ -56,6 +56,8 @@ let lastBossSpawnTime = 0;
 let bossDriftTime = 0;
 let gameLevel = 1;
 let levelText;
+let miniBossSpawnTimer = 0;
+const MINI_BOSS_SPAWN_INTERVAL = 25;
 
 // Scoring constants
 const POINTS_FOR_AVOIDING_ENEMY = 10;
@@ -192,6 +194,7 @@ function preload() {
     this.load.image('player', 'images/player.png');
     this.load.image('enemy', 'images/enemy.png');
     this.load.image('boss', 'images/boss.png');
+    this.load.image('boss_dragon', 'images/boss_dragon.png');
     this.load.image('stars0', 'images/stars_0.png');
     this.load.image('stars1', 'images/stars_1.png');
     this.load.image('stars2', 'images/stars_2.png');
@@ -585,6 +588,14 @@ function update() {
             }
             enemySpawnTimer = 0;
         }
+
+        if (gameLevel >= 3) {
+            miniBossSpawnTimer += dt;
+            if (miniBossSpawnTimer >= MINI_BOSS_SPAWN_INTERVAL) {
+                spawnMiniBoss(this);
+                miniBossSpawnTimer = 0;
+            }
+        }
     }
     
     // Remove bullets that go off screen
@@ -614,15 +625,26 @@ function update() {
 
         if (enemy.driftAmp1 != null) {
             enemy.driftTime += dt;
-            // Random walk: small random nudges that accumulate over time
             enemy.driftWander += (Math.random() - 0.5) * 120 * dt;
-            enemy.driftWander *= 0.97; // dampen so it doesn't run away
+            enemy.driftWander *= 0.97;
             const targetX = enemy.driftOriginX
                 + Math.sin(enemy.driftTime * enemy.driftSpd1 + enemy.driftPhase1) * enemy.driftAmp1
                 + Math.sin(enemy.driftTime * enemy.driftSpd2 + enemy.driftPhase2) * enemy.driftAmp2
                 + enemy.driftWander;
             const clampedX = Phaser.Math.Clamp(targetX, 30, this.scale.width - 30);
             enemy.x = clampedX;
+        }
+
+        if (enemy.isMiniShooter && enemy.shootTimer != null) {
+            enemy.shootTimer -= dt;
+            if (enemy.shootTimer <= 0) {
+                enemy.shootTimer = 2.0;
+                const b = bossBullets.create(enemy.x, enemy.y + 20, 'bossBullet');
+                b.setScale(1.2);
+                const angle = Phaser.Math.Angle.Between(enemy.x, enemy.y, player.x, player.y);
+                b.setVelocity(Math.cos(angle) * 250, Math.sin(angle) * 250);
+                playBossShootSound();
+            }
         }
     });
 }
@@ -735,6 +757,38 @@ function spawnEnemy(scene, currentScore = 0, elapsedTime = 0) {
         enemy.driftWander = 0;
         enemy.driftTime = 0;
     }
+}
+
+function spawnMiniBoss(scene) {
+    ensureBossSpriteSheet(scene, 'boss', 'bossSheet', 'bossFly');
+    if (!scene.textures.exists('bossSheet')) return;
+
+    const x = Phaser.Math.Between(60, scene.scale.width - 60);
+    const enemy = enemies.create(x, -60, 'bossSheet');
+    enemy.play('bossFly');
+
+    const targetSize = 80;
+    const tex = scene.textures.get('bossSheet');
+    const frameWidth = tex.frames['0'] ? tex.frames['0'].width : 32;
+    const frameHeight = tex.frames['0'] ? tex.frames['0'].height : 32;
+    const maxDimension = Math.max(frameWidth, frameHeight);
+    enemy.setScale(maxDimension > 0 ? targetSize / maxDimension : 1.5);
+
+    enemy.setVelocityY(Phaser.Math.Between(80, 140));
+    enemy.body.setSize(enemy.width * 0.8, enemy.height * 0.8);
+
+    enemy.isMiniShooter = true;
+    enemy.shootTimer = 2.0;
+
+    enemy.driftOriginX = x;
+    enemy.driftAmp1 = Phaser.Math.Between(25, 60);
+    enemy.driftAmp2 = Phaser.Math.Between(10, 30);
+    enemy.driftSpd1 = Phaser.Math.FloatBetween(0.7, 1.8);
+    enemy.driftSpd2 = Phaser.Math.FloatBetween(1.5, 3.5);
+    enemy.driftPhase1 = Phaser.Math.FloatBetween(0, Math.PI * 2);
+    enemy.driftPhase2 = Phaser.Math.FloatBetween(0, Math.PI * 2);
+    enemy.driftWander = 0;
+    enemy.driftTime = 0;
 }
 
 function spawnMathEquation(scene) {
@@ -967,7 +1021,6 @@ function evaluateMathAnswer(scene) {
     const wasCorrect = correct;
     scene.time.delayedCall(800, () => {
         cleanupMathUI();
-        resumeAfterMath();
 
         if (wasCorrect) {
             const toExplode = enemies.children.entries.slice().filter(
@@ -982,6 +1035,12 @@ function evaluateMathAnswer(scene) {
                     }
                 });
             });
+            const resumeDelay = Math.max(100, toExplode.length * 50 + 100);
+            scene.time.delayedCall(resumeDelay, () => {
+                resumeAfterMath();
+            });
+        } else {
+            resumeAfterMath();
         }
     });
 }
@@ -1050,54 +1109,53 @@ function resumeAfterMath() {
     mathStoredVelocities = [];
 }
 
-function spawnBoss(scene) {
+function ensureBossSpriteSheet(scene, imgKey, sheetKey, animKey) {
     const textures = scene.textures.list;
-    const isValidTexture = (key) => {
-        if (!textures[key]) return false;
-        try {
-            const texture = textures[key];
-            if (texture.key && texture.key.includes('__MISSING')) return false;
-            if (texture.source && texture.source[0]) {
-                const source = texture.source[0];
-                if (source.width > 0 && source.height > 0) return true;
-            }
-            return false;
-        } catch (e) {
-            return false;
-        }
-    };
+    const isValid = textures[imgKey] && textures[imgKey].source &&
+        textures[imgKey].source[0] && textures[imgKey].source[0].width > 0;
+
+    if (!isValid) return null;
+
+    const tex = scene.textures.get(imgKey);
+    const imgWidth = tex.source[0].width;
+    const imgHeight = tex.source[0].height;
+    const frameWidth = Math.floor(imgWidth / 4);
+    const frameHeight = imgHeight;
+
+    if (!scene.textures.exists(sheetKey)) {
+        scene.textures.addSpriteSheet(sheetKey, tex.source[0].image, {
+            frameWidth: frameWidth,
+            frameHeight: frameHeight
+        });
+        scene.anims.create({
+            key: animKey,
+            frames: scene.anims.generateFrameNumbers(sheetKey, { start: 0, end: 3 }),
+            frameRate: 8,
+            repeat: -1
+        });
+    }
+
+    return { sheetKey, animKey, frameWidth, frameHeight };
+}
+
+function spawnBoss(scene) {
+    const bossConfig = gameLevel >= 2
+        ? { imgKey: 'boss_dragon', sheetKey: 'bossDragonSheet', animKey: 'bossDragonFly', hp: 26, size: 140 }
+        : { imgKey: 'boss', sheetKey: 'bossSheet', animKey: 'bossFly', hp: 20, size: 120 };
+
+    bossMaxHP = bossConfig.hp;
 
     const startX = scene.scale.width / 2;
+    const sheetInfo = ensureBossSpriteSheet(scene, bossConfig.imgKey, bossConfig.sheetKey, bossConfig.animKey);
 
-    if (isValidTexture('boss')) {
-        const bossTexture = scene.textures.get('boss');
-        const imgWidth = bossTexture.source[0].width;
-        const imgHeight = bossTexture.source[0].height;
-        const frameWidth = Math.floor(imgWidth / 4);
-        const frameHeight = imgHeight;
+    if (sheetInfo) {
+        boss = enemies.create(startX, -80, sheetInfo.sheetKey);
+        boss.play(sheetInfo.animKey);
 
-        if (!scene.textures.exists('bossSheet')) {
-            scene.textures.addSpriteSheet('bossSheet', bossTexture.source[0].image, {
-                frameWidth: frameWidth,
-                frameHeight: frameHeight
-            });
-            scene.anims.create({
-                key: 'bossFly',
-                frames: scene.anims.generateFrameNumbers('bossSheet', { start: 0, end: 3 }),
-                frameRate: 8,
-                repeat: -1
-            });
-        }
-
-        boss = enemies.create(startX, -80, 'bossSheet');
-        boss.play('bossFly');
-
-        const targetSize = 120;
-        const maxDimension = Math.max(frameWidth, frameHeight);
-        const bossScale = maxDimension > 0 ? targetSize / maxDimension : 2;
+        const maxDimension = Math.max(sheetInfo.frameWidth, sheetInfo.frameHeight);
+        const bossScale = maxDimension > 0 ? bossConfig.size / maxDimension : 2;
         boss.setScale(bossScale);
     } else {
-        // Fallback: large red diamond
         if (!scene.textures.exists('bossFallback')) {
             const g = scene.add.graphics();
             g.fillStyle(0xff00ff, 1);
@@ -1115,7 +1173,6 @@ function spawnBoss(scene) {
     boss.setVelocity(0, 0);
     boss.body.setSize(boss.width * 0.8, boss.height * 0.8);
 
-    // Tween the boss from off-screen down to its hover position
     scene.tweens.add({
         targets: boss,
         y: 130,
@@ -1124,16 +1181,14 @@ function spawnBoss(scene) {
     });
 
     bossActive = true;
-    bossHP = BOSS_MAX_HP;
+    bossHP = bossMaxHP;
     bossDriftTime = 0;
     bossShootTimer = 2.0;
 
-    // Create health bar background (dark red)
     bossHealthBarBg = scene.add.rectangle(
         scene.scale.width / 2, 30, 200, 14, 0x440000
     ).setDepth(10);
 
-    // Create health bar fill (bright red)
     bossHealthBar = scene.add.rectangle(
         scene.scale.width / 2, 30, 200, 14, 0xff0000
     ).setDepth(11);
@@ -1141,7 +1196,7 @@ function spawnBoss(scene) {
 
 function updateBossHealthBar() {
     if (!bossHealthBar || !bossHealthBar.active) return;
-    const ratio = bossHP / BOSS_MAX_HP;
+    const ratio = bossHP / bossMaxHP;
     bossHealthBar.width = 200 * ratio;
     // Shift color from red to green as HP is depleted... actually keep it red-to-yellow
     if (ratio > 0.5) {
@@ -1239,19 +1294,19 @@ function hitEnemy(bullet, enemy) {
         return;
     }
 
-    // Regular enemy: destroy immediately
     const enemyX = enemy.x;
     const enemyY = enemy.y;
+    const wasMiniShooter = enemy.isMiniShooter;
 
     bullet.destroy();
     enemy.destroy();
 
     playEnemyShotSound();
 
-    score += POINTS_FOR_SHOOTING_ENEMY;
+    score += wasMiniShooter ? POINTS_FOR_SHOOTING_ENEMY * 3 : POINTS_FOR_SHOOTING_ENEMY;
     scoreText.setText('Score: ' + score);
 
-    createExplosion(scene, enemyX, enemyY, 1.0);
+    createExplosion(scene, enemyX, enemyY, wasMiniShooter ? 1.5 : 1.0);
 }
 
 function createExplosion(scene, x, y, scale) {
@@ -1415,6 +1470,8 @@ function restartGame() {
     gameStartTime = player.scene.time.now;
     gameLevel = 1;
     levelText.setText('Level: 1');
+    miniBossSpawnTimer = 0;
+    bossMaxHP = 20;
 
     // Reset math equation state
     cleanupMathUI();
