@@ -54,6 +54,8 @@ let bossBullets;
 let bossShootTimer = 0;
 let lastBossSpawnTime = 0;
 let bossDriftTime = 0;
+let gameLevel = 1;
+let levelText;
 
 // Scoring constants
 const POINTS_FOR_AVOIDING_ENEMY = 10;
@@ -442,6 +444,13 @@ function create() {
         strokeThickness: 4
     });
     
+    levelText = this.add.text(16, 84, 'Level: 1', {
+        fontSize: '24px',
+        fill: '#fff',
+        stroke: '#000',
+        strokeThickness: 4
+    });
+    
     // Initialize game start time
     gameStartTime = this.time.now;
 }
@@ -715,16 +724,17 @@ function spawnEnemy(scene, currentScore = 0, elapsedTime = 0) {
     enemy.setVelocityY(Phaser.Math.Between(minSpeed, maxSpeed));
     enemy.body.setSize(enemy.width * 0.8, enemy.height * 0.8);
 
-    // Horizontal drift — two layered sine waves + random walk for organic movement
-    enemy.driftOriginX = x;
-    enemy.driftAmp1 = Phaser.Math.Between(25, 60);
-    enemy.driftAmp2 = Phaser.Math.Between(10, 30);
-    enemy.driftSpd1 = Phaser.Math.FloatBetween(0.7, 1.8);
-    enemy.driftSpd2 = Phaser.Math.FloatBetween(1.5, 3.5);
-    enemy.driftPhase1 = Phaser.Math.FloatBetween(0, Math.PI * 2);
-    enemy.driftPhase2 = Phaser.Math.FloatBetween(0, Math.PI * 2);
-    enemy.driftWander = 0;
-    enemy.driftTime = 0;
+    if (gameLevel >= 2) {
+        enemy.driftOriginX = x;
+        enemy.driftAmp1 = Phaser.Math.Between(25, 60);
+        enemy.driftAmp2 = Phaser.Math.Between(10, 30);
+        enemy.driftSpd1 = Phaser.Math.FloatBetween(0.7, 1.8);
+        enemy.driftSpd2 = Phaser.Math.FloatBetween(1.5, 3.5);
+        enemy.driftPhase1 = Phaser.Math.FloatBetween(0, Math.PI * 2);
+        enemy.driftPhase2 = Phaser.Math.FloatBetween(0, Math.PI * 2);
+        enemy.driftWander = 0;
+        enemy.driftTime = 0;
+    }
 }
 
 function spawnMathEquation(scene) {
@@ -938,14 +948,6 @@ function evaluateMathAnswer(scene) {
         scoreText.setText('Score: ' + score);
         playEnemyShotSound();
         showMathFeedback(scene, 'CORRECT! +300', '#00ff00');
-
-        // Screen-clear: explode all regular enemies
-        enemies.children.entries.slice().forEach((enemy) => {
-            if (enemy && enemy.active && !enemy.isBoss) {
-                createExplosion(scene, enemy.x, enemy.y, 1.0);
-                enemy.destroy();
-            }
-        });
     } else {
         health--;
         healthText.setText('Health: ' + health);
@@ -962,9 +964,25 @@ function evaluateMathAnswer(scene) {
         }
     }
 
+    const wasCorrect = correct;
     scene.time.delayedCall(800, () => {
         cleanupMathUI();
         resumeAfterMath();
+
+        if (wasCorrect) {
+            const toExplode = enemies.children.entries.slice().filter(
+                (e) => e && e.active && !e.isBoss
+            );
+            playEnemyShotSound();
+            toExplode.forEach((enemy, i) => {
+                scene.time.delayedCall(i * 50, () => {
+                    if (enemy && enemy.active) {
+                        createExplosion(scene, enemy.x, enemy.y, 1.0);
+                        enemy.destroy();
+                    }
+                });
+            });
+        }
     });
 }
 
@@ -1177,6 +1195,19 @@ function destroyBoss(scene) {
     bossHealthBarBg = null;
     bossBullets.clear(true, true);
     lastBossSpawnTime = (player.scene.time.now - gameStartTime) / 1000;
+
+    gameLevel++;
+    levelText.setText('Level: ' + gameLevel);
+    const announcement = scene.add.text(scene.scale.width / 2, scene.scale.height / 2, `LEVEL ${gameLevel}!`, {
+        fontSize: '56px',
+        fontStyle: 'bold',
+        fill: '#ffff00',
+        stroke: '#000',
+        strokeThickness: 6
+    }).setOrigin(0.5).setDepth(20);
+    scene.time.delayedCall(2000, () => {
+        if (announcement && announcement.active) announcement.destroy();
+    });
 }
 
 function hitEnemy(bullet, enemy) {
@@ -1382,6 +1413,8 @@ function restartGame() {
     shootCooldown = 0;
     touchActive = false;
     gameStartTime = player.scene.time.now;
+    gameLevel = 1;
+    levelText.setText('Level: 1');
 
     // Reset math equation state
     cleanupMathUI();
